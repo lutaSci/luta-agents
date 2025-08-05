@@ -437,35 +437,12 @@ Homepage = "https://www.camel-ai.org/"
 Repository = "https://github.com/camel-ai/camel"
 Documentation = "https://docs.camel-ai.org"
 
-[tool.hatch.build.targets.sdist]
-include = [
-    "camel",
-    "camel/toolkits/hybrid_browser_toolkit/ts/package.json",
-    "camel/toolkits/hybrid_browser_toolkit/ts/package-lock.json",
-    "camel/toolkits/hybrid_browser_toolkit/ts/tsconfig.json",
-    "camel/toolkits/hybrid_browser_toolkit/ts/src/**/*",
-    "camel/toolkits/hybrid_browser_toolkit/ts/websocket-server.js",
-    "hatch_build_npm.py",
-]
-exclude = ["camel/toolkits/hybrid_browser_toolkit/ts/node_modules/**/*"]
-
 [tool.hatch.build.targets.wheel]
-include = [
-    "camel",
-    "camel/toolkits/hybrid_browser_toolkit/ts/package.json",
-    "camel/toolkits/hybrid_browser_toolkit/ts/package-lock.json",
-    "camel/toolkits/hybrid_browser_toolkit/ts/tsconfig.json",
-    "camel/toolkits/hybrid_browser_toolkit/ts/src/**/*",
-    "camel/toolkits/hybrid_browser_toolkit/ts/dist/**/*",
-    "camel/toolkits/hybrid_browser_toolkit/ts/websocket-server.js",
-]
-exclude = ["camel/toolkits/hybrid_browser_toolkit/ts/node_modules/**/*"]
+packages = ["camel"]
+only-include = ["camel"]
 
-[tool.hatch.build.targets.wheel.hooks.custom]
-path = "hatch_build_npm.py"
-
-[tool.hatch.build.targets.sdist.hooks.custom]
-path = "hatch_build_npm.py"
+# 简化构建配置，去掉复杂的npm构建要求
+# exclude = ["camel/toolkits/hybrid_browser_toolkit/ts/node_modules/**/*"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
