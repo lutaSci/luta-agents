@@ -101,9 +101,23 @@ class RedisStorage(BaseKeyValueStorage):
     def save(
         self, records: List[Dict[str, Any]], expire: Optional[int] = None
     ) -> None:
-        r"""Saves a batch of records to the key-value storage system."""
+        r"""Saves a batch of records to the key-value storage system.
+
+        NOTE: Implemented with append semantics to align with InMemory storage.
+        It loads existing records, appends the new ones, and then persists.
+        """
         try:
-            self._run_async(self._async_save(records, expire))
+            # Load existing records (if any)
+            try:
+                existing: List[Dict[str, Any]] = self._run_async(self._async_load()) or []
+            except Exception:
+                existing = []
+
+            # Merge (append semantics)
+            merged: List[Dict[str, Any]] = list(existing) + list(records)
+
+            # Persist merged records
+            self._run_async(self._async_save(merged, expire))
         except Exception as e:
             logger.error(f"Error in save: {e}")
 
@@ -147,6 +161,13 @@ class RedisStorage(BaseKeyValueStorage):
         try:
             value = await self._client.get(self._sid)
             if value:
+                # value can be bytes when decode_responses=False
+                if isinstance(value, (bytes, bytearray)):
+                    try:
+                        value = value.decode("utf-8")
+                    except Exception:
+                        # Fallback decoding
+                        value = value.decode(errors="ignore")
                 return json.loads(value)
             return []
         except Exception as e:
