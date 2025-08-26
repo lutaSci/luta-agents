@@ -68,13 +68,13 @@ class ChatHistoryBlock(MemoryBlock):
         Returns:
             List[ContextRecord]: A list of retrieved records.
         """
-        records_dict = self.storage.load()
-        if len(records_dict) == 0:
+        record_dicts = self.storage.load()
+        if len(record_dicts) == 0:
             warnings.warn("The `ChatHistoryMemory` is empty.")
             return list()
 
         # SAFE MODEL convert dict to MemoryRecord (Compatible EnumType comparison)
-        records = [MemoryRecord.from_dict(record) for record in records_dict]
+        records = [MemoryRecord.from_dict(record) for record in record_dicts]
 
         if window_size is not None and window_size >= 0:
             # Initial preserved index: Keep first message

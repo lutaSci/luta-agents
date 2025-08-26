@@ -20,7 +20,6 @@ import json
 import time
 from dataclasses import asdict
 from typing import Any, ClassVar, Dict
-from enum import Enum
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
