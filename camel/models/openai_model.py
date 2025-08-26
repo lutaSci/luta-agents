@@ -429,6 +429,12 @@ class OpenAIModel(BaseModelBackend):
 
         request_config = self._sanitize_config(request_config)
 
+        print(f"OPENAI MODEL REQ")
+        for item in messages:
+            print(f'{item["role"]} : {item["content"]}')
+            print(f"=====================================\n")
+        print(f"OPENAI MODEL REQ")
+
         return await self._async_client.chat.completions.create(
             messages=messages,
             model=self.model_type,

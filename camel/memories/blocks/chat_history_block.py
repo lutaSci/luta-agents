@@ -68,10 +68,13 @@ class ChatHistoryBlock(MemoryBlock):
         Returns:
             List[ContextRecord]: A list of retrieved records.
         """
-        record_dicts = self.storage.load()
-        if len(record_dicts) == 0:
+        records_dict = self.storage.load()
+        if len(records_dict) == 0:
             warnings.warn("The `ChatHistoryMemory` is empty.")
             return list()
+
+        # SAFE MODEL convert dict to MemoryRecord (Compatible EnumType comparison)
+        records = [MemoryRecord.from_dict(record) for record in records_dict]
 
         if window_size is not None and window_size >= 0:
             # Initial preserved index: Keep first message
@@ -79,9 +82,9 @@ class ChatHistoryBlock(MemoryBlock):
             start_index = (
                 1
                 if (
-                    record_dicts
-                    and record_dicts[0]['role_at_backend']
-                    in {OpenAIBackendRole.SYSTEM, OpenAIBackendRole.DEVELOPER}
+                        records
+                        and records[0].role_at_backend
+                        in {OpenAIBackendRole.SYSTEM, OpenAIBackendRole.DEVELOPER}
                 )
                 else 0
             )
@@ -100,10 +103,10 @@ class ChatHistoryBlock(MemoryBlock):
             Input: [user_msg1, user_msg2, user_msg3, user_msg4, , user_msg5]
             Result: [user_msg3, user_msg4, , user_msg5]
             """
-            preserved_messages = record_dicts[
+            preserved_messages = records[
                 :start_index
             ]  # Preserve system message (if exists)
-            sliding_messages = record_dicts[
+            sliding_messages = records[
                 start_index:
             ]  # Messages to be truncated
 
@@ -114,11 +117,10 @@ class ChatHistoryBlock(MemoryBlock):
             final_records = preserved_messages + truncated_messages
         else:
             # Return full records when no window restriction
-            final_records = record_dicts
+            final_records = records
 
-        chat_records: List[MemoryRecord] = [
-            MemoryRecord.from_dict(record) for record in final_records
-        ]
+        # We assume that, all record`s type is MemoryRecord
+        chat_records: List[MemoryRecord] = final_records
 
         # We assume that, in the chat history memory, the closer the record is
         # to the current message, the more score it will be.
