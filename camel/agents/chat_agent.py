@@ -683,6 +683,101 @@ class ChatAgent(BaseAgent):
         r"""Returns the system message for the agent."""
         return self._system_message
 
+    @system_message.setter
+    def system_message(self, value: Optional[Union[BaseMessage, str]], preserve_history: bool = True) -> None:
+        r"""Set a new system message.
+
+        By default, preserves existing conversation history by replacing
+        the leading SYSTEM record in memory. If preservation fails, falls
+        back to resetting memory to only include the new system message.
+
+        Args:
+            value (Optional[Union[BaseMessage, str]]): New system message.
+        """
+        self.set_system_message(value, preserve_history=preserve_history)
+
+    def set_system_message(
+        self,
+        system_message: Optional[Union[BaseMessage, str]],
+        preserve_history: bool = True,
+    ) -> None:
+        r"""Replace the agent's system message.
+
+        When `preserve_history` is True, this method attempts to keep the
+        existing conversation history by replacing the first SYSTEM record
+        in memory. If that is not possible, it resets memory with the new
+        system message only.
+
+        Args:
+            system_message (Optional[Union[BaseMessage, str]]): New system
+                message. If str, it will be wrapped as an assistant message
+                then stored as SYSTEM at backend.
+            preserve_history (bool): Whether to keep chat history. (default:
+                True)
+        """
+        # Normalize and store as original system message
+        normalized_system_msg = (
+            BaseMessage.make_assistant_message(
+                role_name="Assistant", content=system_message
+            )
+            if isinstance(system_message, str)
+            else system_message
+        )
+
+        self._original_system_message = normalized_system_msg
+        self._system_message = (
+            self._generate_system_message_for_output_language()
+        )
+
+        # If not preserving history, just reset messages
+        if not preserve_history:
+            self.init_messages()
+            return
+
+        # Try to preserve existing history by replacing leading SYSTEM record
+        try:
+            records = self.memory.retrieve()
+        except Exception:
+            # Fallback to reset when retrieval fails
+            self.init_messages()
+            return
+
+        # Determine timestamp for new system message
+        import time
+
+        timestamp_for_system = time.time_ns() / 1_000_000_000
+        if records:
+            try:
+                first_ts = getattr(records[0].memory_record, "timestamp", None)
+                if isinstance(first_ts, (int, float)):
+                    timestamp_for_system = first_ts
+            except Exception:
+                pass
+
+        # Clear and rehydrate memory: new system message + rest of records
+        self.memory.clear()
+
+        if self.system_message is not None:
+            self.memory.write_record(
+                MemoryRecord(
+                    message=self.system_message,
+                    role_at_backend=OpenAIBackendRole.SYSTEM,
+                    timestamp=timestamp_for_system,
+                    agent_id=self.agent_id,
+                )
+            )
+
+        # Re-add previous records excluding the leading SYSTEM (if present)
+        is_first = True
+        for context_record in records:
+            mem_rec = context_record.memory_record
+            if is_first:
+                is_first = False
+                if mem_rec.role_at_backend == OpenAIBackendRole.SYSTEM:
+                    # Skip the original system record
+                    continue
+            self.memory.write_record(mem_rec)
+
     @property
     def tool_dict(self) -> Dict[str, FunctionTool]:
         r"""Returns a dictionary of internal tools."""
