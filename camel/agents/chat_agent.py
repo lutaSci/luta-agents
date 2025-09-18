@@ -63,6 +63,7 @@ from camel.memories import (
     MemoryRecord,
     ScoreBasedContextCreator,
 )
+from camel.memories.blocks.chat_history_block import EmptyMemoryWarning
 from camel.messages import (
     BaseMessage,
     FunctionCallingMessage,
@@ -141,7 +142,7 @@ class StreamContentAccumulator:
 
     def __init__(self):
         self.base_content = ""  # Content before tool calls
-        self.current_content = ""  # Current streaming content
+        self.current_content = []  # Accumulated streaming fragments
         self.tool_status_messages = []  # Accumulated tool status messages
 
     def set_base_content(self, content: str):
@@ -150,7 +151,7 @@ class StreamContentAccumulator:
 
     def add_streaming_content(self, new_content: str):
         r"""Add new streaming content."""
-        self.current_content += new_content
+        self.current_content.append(new_content)
 
     def add_tool_status(self, status_message: str):
         r"""Add a tool status message."""
@@ -159,16 +160,18 @@ class StreamContentAccumulator:
     def get_full_content(self) -> str:
         r"""Get the complete accumulated content."""
         tool_messages = "".join(self.tool_status_messages)
-        return self.base_content + tool_messages + self.current_content
+        current = "".join(self.current_content)
+        return self.base_content + tool_messages + current
 
     def get_content_with_new_status(self, status_message: str) -> str:
         r"""Get content with a new status message appended."""
         tool_messages = "".join([*self.tool_status_messages, status_message])
-        return self.base_content + tool_messages + self.current_content
+        current = "".join(self.current_content)
+        return self.base_content + tool_messages + current
 
     def reset_streaming_content(self):
         r"""Reset only the streaming content, keep base and tool status."""
-        self.current_content = ""
+        self.current_content = []
 
 
 class StreamingChatAgentResponse:
@@ -233,7 +236,7 @@ class StreamingChatAgentResponse:
         r"""Make this object iterable."""
         if self._consumed:
             # If already consumed, iterate over stored responses
-            return iter(self._responses)
+            yield from self._responses
         else:
             # If not consumed, consume and yield
             try:
@@ -396,6 +399,10 @@ class ChatAgent(BaseAgent):
         step_timeout (Optional[float], optional): Timeout in seconds for the
             entire step operation. If None, no timeout is applied.
             (default: :obj:`None`)
+        stream_accumulate (bool, optional): When True, partial streaming
+            updates return accumulated content (current behavior). When False,
+            partial updates return only the incremental delta. (default:
+            :obj:`True`)
     """
 
     def __init__(
@@ -439,6 +446,7 @@ class ChatAgent(BaseAgent):
         retry_attempts: int = 3,
         retry_delay: float = 1.0,
         step_timeout: Optional[float] = None,
+        stream_accumulate: bool = True,
     ) -> None:
         if isinstance(model, ModelManager):
             self.model_backend = model
@@ -527,6 +535,7 @@ class ChatAgent(BaseAgent):
         self.retry_attempts = max(1, retry_attempts)
         self.retry_delay = max(0.0, retry_delay)
         self.step_timeout = step_timeout
+        self.stream_accumulate = stream_accumulate
 
     def reset(self):
         r"""Resets the :obj:`ChatAgent` to its initial state."""
@@ -673,101 +682,6 @@ class ChatAgent(BaseAgent):
     def system_message(self) -> Optional[BaseMessage]:
         r"""Returns the system message for the agent."""
         return self._system_message
-
-    @system_message.setter
-    def system_message(self, value: Optional[Union[BaseMessage, str]], preserve_history: bool = True) -> None:
-        r"""Set a new system message.
-
-        By default, preserves existing conversation history by replacing
-        the leading SYSTEM record in memory. If preservation fails, falls
-        back to resetting memory to only include the new system message.
-
-        Args:
-            value (Optional[Union[BaseMessage, str]]): New system message.
-        """
-        self.set_system_message(value, preserve_history=preserve_history)
-
-    def set_system_message(
-        self,
-        system_message: Optional[Union[BaseMessage, str]],
-        preserve_history: bool = True,
-    ) -> None:
-        r"""Replace the agent's system message.
-
-        When `preserve_history` is True, this method attempts to keep the
-        existing conversation history by replacing the first SYSTEM record
-        in memory. If that is not possible, it resets memory with the new
-        system message only.
-
-        Args:
-            system_message (Optional[Union[BaseMessage, str]]): New system
-                message. If str, it will be wrapped as an assistant message
-                then stored as SYSTEM at backend.
-            preserve_history (bool): Whether to keep chat history. (default:
-                True)
-        """
-        # Normalize and store as original system message
-        normalized_system_msg = (
-            BaseMessage.make_assistant_message(
-                role_name="Assistant", content=system_message
-            )
-            if isinstance(system_message, str)
-            else system_message
-        )
-
-        self._original_system_message = normalized_system_msg
-        self._system_message = (
-            self._generate_system_message_for_output_language()
-        )
-
-        # If not preserving history, just reset messages
-        if not preserve_history:
-            self.init_messages()
-            return
-
-        # Try to preserve existing history by replacing leading SYSTEM record
-        try:
-            records = self.memory.retrieve()
-        except Exception:
-            # Fallback to reset when retrieval fails
-            self.init_messages()
-            return
-
-        # Determine timestamp for new system message
-        import time
-
-        timestamp_for_system = time.time_ns() / 1_000_000_000
-        if records:
-            try:
-                first_ts = getattr(records[0].memory_record, "timestamp", None)
-                if isinstance(first_ts, (int, float)):
-                    timestamp_for_system = first_ts
-            except Exception:
-                pass
-
-        # Clear and rehydrate memory: new system message + rest of records
-        self.memory.clear()
-
-        if self.system_message is not None:
-            self.memory.write_record(
-                MemoryRecord(
-                    message=self.system_message,
-                    role_at_backend=OpenAIBackendRole.SYSTEM,
-                    timestamp=timestamp_for_system,
-                    agent_id=self.agent_id,
-                )
-            )
-
-        # Re-add previous records excluding the leading SYSTEM (if present)
-        is_first = True
-        for context_record in records:
-            mem_rec = context_record.memory_record
-            if is_first:
-                is_first = False
-                if mem_rec.role_at_backend == OpenAIBackendRole.SYSTEM:
-                    # Skip the original system record
-                    continue
-            self.memory.write_record(mem_rec)
 
     @property
     def tool_dict(self) -> Dict[str, FunctionTool]:
@@ -936,7 +850,12 @@ class ChatAgent(BaseAgent):
             current_tokens = token_counter.count_tokens_from_messages(
                 [message.to_openai_message(role)]
             )
-            _, ctx_tokens = self.memory.get_context()
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=EmptyMemoryWarning)
+                _, ctx_tokens = self.memory.get_context()
+
             remaining_budget = max(0, token_limit - ctx_tokens)
 
             if current_tokens <= remaining_budget:
@@ -1130,6 +1049,7 @@ class ChatAgent(BaseAgent):
             None
         """
         self.memory.clear()
+
         if self.system_message is not None:
             self.update_memory(self.system_message, OpenAIBackendRole.SYSTEM)
 
@@ -2760,12 +2680,6 @@ class ChatAgent(BaseAgent):
         stream_completed = False
 
         for chunk in stream:
-            # Update token usage if available
-            if chunk.usage:
-                self._update_token_usage_tracker(
-                    step_token_usage, safe_model_dump(chunk.usage)
-                )
-
             # Process chunk delta
             if chunk.choices and len(chunk.choices) > 0:
                 choice = chunk.choices[0]
@@ -2798,12 +2712,6 @@ class ChatAgent(BaseAgent):
                     # If we have complete tool calls, execute them with
                     # sync status updates
                     if accumulated_tool_calls:
-                        # Record assistant message with tool calls first
-                        self._record_assistant_tool_calls_message(
-                            accumulated_tool_calls,
-                            content_accumulator.get_full_content(),
-                        )
-
                         # Execute tools synchronously with
                         # optimized status updates
                         for (
@@ -2836,7 +2744,49 @@ class ChatAgent(BaseAgent):
                             )
 
                         self.record_message(final_message)
-                    break
+            elif chunk.usage and not chunk.choices:
+                # Handle final chunk with usage but empty choices
+                # This happens when stream_options={"include_usage": True}
+                # Update the final usage from this chunk
+                self._update_token_usage_tracker(
+                    step_token_usage, safe_model_dump(chunk.usage)
+                )
+
+                # Create final response with final usage
+                final_content = content_accumulator.get_full_content()
+                if final_content.strip():
+                    final_message = BaseMessage(
+                        role_name=self.role_name,
+                        role_type=self.role_type,
+                        meta_dict={},
+                        content=final_content,
+                    )
+
+                    if response_format:
+                        self._try_format_message(
+                            final_message, response_format
+                        )
+
+                    # Create final response with final usage (not partial)
+                    final_response = ChatAgentResponse(
+                        msgs=[final_message],
+                        terminated=False,
+                        info={
+                            "id": getattr(chunk, 'id', ''),
+                            "usage": step_token_usage.copy(),
+                            "finish_reasons": ["stop"],
+                            "num_tokens": self._get_token_count(final_content),
+                            "tool_calls": tool_call_records or [],
+                            "external_tool_requests": None,
+                            "streaming": False,
+                            "partial": False,
+                        },
+                    )
+                    yield final_response
+                break
+            elif stream_completed:
+                # If we've already seen finish_reason but no usage chunk, exit
+                break
 
         return stream_completed, tool_calls_complete
 
@@ -3001,10 +2951,19 @@ class ChatAgent(BaseAgent):
                 tool = self._internal_tools[function_name]
                 try:
                     result = tool(**args)
+                    # First, create and record the assistant message with tool
+                    # call
+                    assist_msg = FunctionCallingMessage(
+                        role_name=self.role_name,
+                        role_type=self.role_type,
+                        meta_dict=None,
+                        content="",
+                        func_name=function_name,
+                        args=args,
+                        tool_call_id=tool_call_id,
+                    )
 
-                    # Only record the tool response message, not the assistant
-                    # message assistant message with tool_calls was already
-                    # recorded in _record_assistant_tool_calls_message
+                    # Then create the tool response message
                     func_msg = FunctionCallingMessage(
                         role_name=self.role_name,
                         role_type=self.role_type,
@@ -3015,7 +2974,25 @@ class ChatAgent(BaseAgent):
                         tool_call_id=tool_call_id,
                     )
 
-                    self.update_memory(func_msg, OpenAIBackendRole.FUNCTION)
+                    # Record both messages with precise timestamps to ensure
+                    # correct ordering
+                    import time
+
+                    current_time_ns = time.time_ns()
+                    base_timestamp = (
+                        current_time_ns / 1_000_000_000
+                    )  # Convert to seconds
+
+                    self.update_memory(
+                        assist_msg,
+                        OpenAIBackendRole.ASSISTANT,
+                        timestamp=base_timestamp,
+                    )
+                    self.update_memory(
+                        func_msg,
+                        OpenAIBackendRole.FUNCTION,
+                        timestamp=base_timestamp + 1e-6,
+                    )
 
                     return ToolCallingRecord(
                         tool_name=function_name,
@@ -3099,10 +3076,19 @@ class ChatAgent(BaseAgent):
                     else:
                         # Fallback: synchronous call
                         result = tool(**args)
+                    # First, create and record the assistant message with tool
+                    # call
+                    assist_msg = FunctionCallingMessage(
+                        role_name=self.role_name,
+                        role_type=self.role_type,
+                        meta_dict=None,
+                        content="",
+                        func_name=function_name,
+                        args=args,
+                        tool_call_id=tool_call_id,
+                    )
 
-                    # Only record the tool response message, not the assistant
-                    # message assistant message with tool_calls was already
-                    # recorded in _record_assistant_tool_calls_message
+                    # Then create the tool response message
                     func_msg = FunctionCallingMessage(
                         role_name=self.role_name,
                         role_type=self.role_type,
@@ -3113,7 +3099,25 @@ class ChatAgent(BaseAgent):
                         tool_call_id=tool_call_id,
                     )
 
-                    self.update_memory(func_msg, OpenAIBackendRole.FUNCTION)
+                    # Record both messages with precise timestamps to ensure
+                    # correct ordering
+                    import time
+
+                    current_time_ns = time.time_ns()
+                    base_timestamp = (
+                        current_time_ns / 1_000_000_000
+                    )  # Convert to seconds
+
+                    self.update_memory(
+                        assist_msg,
+                        OpenAIBackendRole.ASSISTANT,
+                        timestamp=base_timestamp,
+                    )
+                    self.update_memory(
+                        func_msg,
+                        OpenAIBackendRole.FUNCTION,
+                        timestamp=base_timestamp + 1e-6,
+                    )
 
                     return ToolCallingRecord(
                         tool_name=function_name,
@@ -3464,18 +3468,13 @@ class ChatAgent(BaseAgent):
         response_format: Optional[Type[BaseModel]] = None,
     ) -> AsyncGenerator[Union[ChatAgentResponse, Tuple[bool, bool]], None]:
         r"""Async version of process streaming chunks with
-        content accumulator."""
+        content accumulator.
+        """
 
         tool_calls_complete = False
         stream_completed = False
 
         async for chunk in stream:
-            # Update token usage if available
-            if chunk.usage:
-                self._update_token_usage_tracker(
-                    step_token_usage, safe_model_dump(chunk.usage)
-                )
-
             # Process chunk delta
             if chunk.choices and len(chunk.choices) > 0:
                 choice = chunk.choices[0]
@@ -3508,13 +3507,6 @@ class ChatAgent(BaseAgent):
                     # If we have complete tool calls, execute them with
                     # async status updates
                     if accumulated_tool_calls:
-                        # Record assistant message with
-                        # tool calls first
-                        self._record_assistant_tool_calls_message(
-                            accumulated_tool_calls,
-                            content_accumulator.get_full_content(),
-                        )
-
                         # Execute tools asynchronously with real-time
                         # status updates
                         async for (
@@ -3549,7 +3541,49 @@ class ChatAgent(BaseAgent):
                             )
 
                         self.record_message(final_message)
-                    break
+            elif chunk.usage and not chunk.choices:
+                # Handle final chunk with usage but empty choices
+                # This happens when stream_options={"include_usage": True}
+                # Update the final usage from this chunk
+                self._update_token_usage_tracker(
+                    step_token_usage, safe_model_dump(chunk.usage)
+                )
+
+                # Create final response with final usage
+                final_content = content_accumulator.get_full_content()
+                if final_content.strip():
+                    final_message = BaseMessage(
+                        role_name=self.role_name,
+                        role_type=self.role_type,
+                        meta_dict={},
+                        content=final_content,
+                    )
+
+                    if response_format:
+                        self._try_format_message(
+                            final_message, response_format
+                        )
+
+                    # Create final response with final usage (not partial)
+                    final_response = ChatAgentResponse(
+                        msgs=[final_message],
+                        terminated=False,
+                        info={
+                            "id": getattr(chunk, 'id', ''),
+                            "usage": step_token_usage.copy(),
+                            "finish_reasons": ["stop"],
+                            "num_tokens": self._get_token_count(final_content),
+                            "tool_calls": tool_call_records or [],
+                            "external_tool_requests": None,
+                            "streaming": False,
+                            "partial": False,
+                        },
+                    )
+                    yield final_response
+                break
+            elif stream_completed:
+                # If we've already seen finish_reason but no usage chunk, exit
+                break
 
         # Yield the final status as a tuple
         yield (stream_completed, tool_calls_complete)
@@ -3642,15 +3676,18 @@ class ChatAgent(BaseAgent):
     ) -> ChatAgentResponse:
         r"""Create a streaming response using content accumulator."""
 
-        # Add new content to accumulator and get full content
+        # Add new content; only build full content when needed
         accumulator.add_streaming_content(new_content)
-        full_content = accumulator.get_full_content()
+        if self.stream_accumulate:
+            message_content = accumulator.get_full_content()
+        else:
+            message_content = new_content
 
         message = BaseMessage(
             role_name=self.role_name,
             role_type=self.role_type,
             meta_dict={},
-            content=full_content,
+            content=message_content,
         )
 
         return ChatAgentResponse(
@@ -3660,7 +3697,7 @@ class ChatAgent(BaseAgent):
                 "id": response_id,
                 "usage": step_token_usage.copy(),
                 "finish_reasons": ["streaming"],
-                "num_tokens": self._get_token_count(full_content),
+                "num_tokens": self._get_token_count(message_content),
                 "tool_calls": tool_call_records or [],
                 "external_tool_requests": None,
                 "streaming": True,
@@ -3747,6 +3784,7 @@ class ChatAgent(BaseAgent):
             tool_execution_timeout=self.tool_execution_timeout,
             pause_event=self.pause_event,
             prune_tool_calls_from_memory=self.prune_tool_calls_from_memory,
+            stream_accumulate=self.stream_accumulate,
         )
 
         # Copy memory if requested
